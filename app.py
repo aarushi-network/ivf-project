@@ -37,41 +37,75 @@ if "messages" not in st.session_state:
 
 # ───────────────── Patient selection UI ─────────────────
 st.markdown("### Select & Lock Patient")
-colA, colB = st.columns([3, 2])
-with colA:
-    q = st.text_input("Patient ID or Name", key="patient_query")
-with colB:
-    if st.button("Resolve"):
+
+
+def resolve_patient():
+    q = st.session_state.patient_query
+    if q:
         resolved, candidates, reason = fuzzy_resolve(ROSTER, q)
         if resolved:
             st.session_state.pending = resolved
-            st.info(
+            st.session_state.resolve_message = (
+                "info",
                 f"Detected: **{resolved['first_name']} {resolved['last_name']}** (`{resolved['patient_id']}`)"
             )
         elif candidates:
-            st.session_state.pending = None  # Clear pending state
-            st.warning("Multiple matches:")
-            for c in candidates:
-                st.write(
-                    f"- `{c['patient_id']}` — {c['first_name']} {c['last_name']} (DOB {c['dob']})"
-                )
+            st.session_state.pending = None
+            st.session_state.resolve_message = ("warning",
+                                                "Multiple matches found")
+            st.session_state.candidates = candidates
         else:
-            st.session_state.pending = None  # Clear pending state
-            st.error("No match found. Try again.")
+            st.session_state.pending = None
+            st.session_state.resolve_message = ("error",
+                                                "No match found. Try again.")
+            st.session_state.candidates = []
+    else:
+        st.session_state.pending = None
+        st.session_state.resolve_message = None
+        st.session_state.candidates = []
+
+
+# Initialize candidates in session state if not present
+if "candidates" not in st.session_state:
+    st.session_state.candidates = []
+if "resolve_message" not in st.session_state:
+    st.session_state.resolve_message = None
+
+q = st.text_input("Patient ID or Name",
+                  key="patient_query",
+                  on_change=resolve_patient)
+
+# Display resolve message if exists
+if st.session_state.resolve_message:
+    msg_type, msg_text = st.session_state.resolve_message
+    if msg_type == "info":
+        st.info(msg_text)
+    elif msg_type == "warning":
+        st.warning(msg_text)
+        for c in st.session_state.candidates:
+            st.write(
+                f"- `{c['patient_id']}` — {c['first_name']} {c['last_name']} (DOB {c['dob']})"
+            )
+    elif msg_type == "error":
+        st.error(msg_text)
 
 if st.session_state.pending:
     p = st.session_state.pending
-    dob_in = st.text_input("Confirm DOB (YYYY-MM-DD)", key="dob_confirm")
-    if st.button("Confirm patient"):
-        if dob_in.strip() == (p["dob"] or "").strip():
-            st.session_state.locked = p
-            st.session_state.pending = None
-            st.session_state.messages.clear()
-            st.success(
-                f"Locked to patient: **{p['first_name']} {p['last_name']}** (`{p['patient_id']}`)"
-            )
-        else:
-            st.error("DOB does not match.")
+    with st.form(key="dob_form"):
+        dob_in = st.text_input("Confirm DOB (YYYY-MM-DD)", key="dob_confirm")
+        submit_button = st.form_submit_button("Confirm patient")
+        if submit_button:
+            if dob_in.strip() == (p["dob"] or "").strip():
+                st.session_state.locked = p
+                st.session_state.pending = None
+                st.session_state.messages.clear()
+                st.session_state.resolve_message = None
+                st.success(
+                    f"Locked to patient: **{p['first_name']} {p['last_name']}** (`{p['patient_id']}`)"
+                )
+                st.rerun()
+            else:
+                st.error("DOB does not match.")
 
 if st.session_state.locked:
     lp = st.session_state.locked
@@ -143,6 +177,6 @@ if prompt:
     st.session_state.messages.append({
         "role": "assistant",
         "content": streamed,
-        "sources": sources
+        # "sources": sources
     })
     st.rerun()
