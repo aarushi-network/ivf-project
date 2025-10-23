@@ -14,13 +14,13 @@ if not OPENAI_API_KEY:
     st.error("OPENAI_API_KEY missing in .env")
     st.stop()
 
-st.set_page_config(page_title="EHR Query Agent (Supabase)", layout="centered")
-st.markdown("## EHR Query Agent — Supabase Patient-Locked")
+st.set_page_config(page_title="EHR Query Agent", layout="centered")
+st.markdown("## EHR Query Agent")
 
 chat = ChatOpenAI(model=LLM_MODEL, temperature=0)
 
 # Load roster
-with st.status("Loading patient roster from Supabase...", expanded=False):
+with st.status("Patient data pre-loaded...", expanded=False):
     ROSTER = build_roster_from_supabase()
 
 if not ROSTER:
