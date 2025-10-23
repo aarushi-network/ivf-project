@@ -49,10 +49,14 @@ with colB:
                 f"Detected: **{resolved['first_name']} {resolved['last_name']}** (`{resolved['patient_id']}`)"
             )
         elif candidates:
+            st.session_state.pending = None  # Clear pending state
             st.warning("Multiple matches:")
             for c in candidates:
-                st.write(f"- `{c['patient_id']}` — {c['first_name']} {c['last_name']} (DOB {c['dob']})")
+                st.write(
+                    f"- `{c['patient_id']}` — {c['first_name']} {c['last_name']} (DOB {c['dob']})"
+                )
         else:
+            st.session_state.pending = None  # Clear pending state
             st.error("No match found. Try again.")
 
 if st.session_state.pending:
@@ -71,7 +75,9 @@ if st.session_state.pending:
 
 if st.session_state.locked:
     lp = st.session_state.locked
-    st.success(f"**Locked:** {lp['first_name']} {lp['last_name']} (`{lp['patient_id']}`) — DOB: {lp['dob']}")
+    st.success(
+        f"**Locked:** {lp['first_name']} {lp['last_name']} (`{lp['patient_id']}`) — DOB: {lp['dob']}"
+    )
 else:
     st.info("No patient locked yet.")
 
@@ -87,7 +93,8 @@ for msg in st.session_state.messages:
                 st.json(msg["sources"])
 
 # 2) Collect new input
-prompt = st.chat_input("Ask about this patient (e.g., 'What medications is this patient on?')")
+prompt = st.chat_input(
+    "Ask about this patient (e.g., 'What medications is this patient on?')")
 
 # 3) Handle the prompt after rendering history
 if prompt:
@@ -95,7 +102,12 @@ if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     if not st.session_state.locked:
-        st.session_state.messages.append({"role": "assistant", "content": "Please lock a patient first."})
+        st.session_state.messages.append({
+            "role":
+            "assistant",
+            "content":
+            "Please lock a patient first."
+        })
         st.rerun()
 
     # RAG for locked patient
@@ -108,8 +120,14 @@ if prompt:
     system = "You are a clinical assistant. Use ONLY the retrieved patient context."
     ctx_block = "\n---\n".join(context[:8]) if context else "(no context)"
     messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": f"CONTEXT:\n{ctx_block}\n\nQUESTION: {prompt}\nAnswer:"},
+        {
+            "role": "system",
+            "content": system
+        },
+        {
+            "role": "user",
+            "content": f"CONTEXT:\n{ctx_block}\n\nQUESTION: {prompt}\nAnswer:"
+        },
     ]
 
     # 4) Stream the assistant reply LIVE (not added to history yet)
@@ -122,5 +140,9 @@ if prompt:
                 placeholder.markdown(streamed)
 
     # 5) Now persist the assistant message and refresh the app
-    st.session_state.messages.append({"role": "assistant", "content": streamed, "sources": sources})
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": streamed,
+        "sources": sources
+    })
     st.rerun()
