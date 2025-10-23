@@ -1,0 +1,7 @@
+modules = ["cpp-clang14", "c-clang14", "python-3.11"]
+[agent]
+expertMode = true
+
+[nix]
+channel = "stable-25_05"
+packages = ["arrow-cpp", "c-ares", "cacert", "cargo", "freetype", "glibcLocales", "grpc", "lcms2", "libffi", "libiconv", "libimagequant", "libjpeg", "libtiff", "libuv", "libwebp", "libxcrypt", "openjpeg", "openssl", "pkg-config", "rapidfuzz-cpp", "rustc", "taskflow", "tcl", "tk", "zlib"]
