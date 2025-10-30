@@ -8,7 +8,10 @@ load_dotenv()
 EMBED_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 emb = OpenAIEmbeddings(model=EMBED_MODEL)
 
-def match_patient_chunks(query: str, patient_id: str, k: int=6) -> List[Dict[str,Any]]:
+
+def match_patient_chunks(query: str,
+                         patient_id: str,
+                         k: int = 6) -> List[Dict[str, Any]]:
     """
     Calls SQL function:
       match_patient_chunks(query_embedding vector, match_count int, p_patient_id text)
@@ -20,5 +23,20 @@ def match_patient_chunks(query: str, patient_id: str, k: int=6) -> List[Dict[str
         "query_embedding": qvec,
         "match_count": k,
         "p_patient_id": patient_id
+    }).execute()
+    return res.data or []
+
+
+def match_general_documents(query: str, k: int = 6) -> List[Dict[str, Any]]:
+    """
+    Calls SQL function for general documents (not patient-specific):
+      match_general_docs_arr(query_embedding vector, match_count int)
+    Returns rows: {id, content, metadata, similarity}
+    """
+    sb = get_supabase()
+    qvec = emb.embed_query(query)
+    res = sb.rpc("match_general_docs_arr", {
+        "query_embedding": qvec,
+        "match_count": k
     }).execute()
     return res.data or []
