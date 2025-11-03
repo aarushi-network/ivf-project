@@ -151,8 +151,7 @@ if mode == "Patient-Specific":
     )
 else:
     prompt = st.chat_input(
-        "Ask about general medical topics (e.g., 'What are common treatments for hypertension?')"
-    )
+        "Ask about general medical topics (e.g., 'What is PCOD?')")
 
 # 3) Handle the prompt
 if prompt:
