@@ -14,17 +14,17 @@ if not OPENAI_API_KEY:
     st.error("OPENAI_API_KEY missing in .env")
     st.stop()
 
-st.set_page_config(page_title="EHR Query Agent (Supabase)", layout="centered")
-st.markdown("## EHR Query Agent — Supabase")
+st.set_page_config(page_title="EHR Query Agent", layout="centered")
+st.markdown("## EHR Query Agent")
 
 chat = ChatOpenAI(model=LLM_MODEL, temperature=0)
 
 # Load roster
-with st.status("Loading patient roster from Supabase...", expanded=False):
+with st.status("Loading patient roster"):
     ROSTER = build_roster_from_supabase()
 
 if not ROSTER:
-    st.error("No patients found in Supabase rag_chunks.metadata.")
+    st.error("No patients found in roster.")
     st.stop()
 
 # Session state
@@ -158,9 +158,9 @@ st.markdown("### Chat")
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
-        if msg.get("sources") and msg["role"] == "assistant":
-            with st.expander("Sources"):
-                st.json(msg["sources"])
+        # if msg.get("sources") and msg["role"] == "assistant":
+        #     with st.expander("Sources"):
+        #         st.json(msg["sources"])
 
 # 2) Collect new input
 if st.session_state.query_mode == "Patient-Specific":
@@ -173,8 +173,7 @@ if st.session_state.query_mode == "Patient-Specific":
             "Please lock a patient first or switch to General mode")
 else:
     prompt = st.chat_input(
-        "Ask about general medical topics (e.g., 'What are common treatments for hypertension?')"
-    )
+        "Ask about general medical topics (e.g., 'What is PCOD?')")
 
 # 3) Handle the prompt
 if prompt:
@@ -197,7 +196,7 @@ if prompt:
             hits = match_patient_chunks(prompt, pid, k=6)
 
         context = [h["content"] for h in hits]
-        sources = [h["metadata"] for h in hits]
+        # sources = [h["metadata"] for h in hits]
         system = "You are a clinical assistant. Use ONLY the retrieved patient context."
     else:
         # RAG for general documents
@@ -206,7 +205,7 @@ if prompt:
             hits = match_general_documents(prompt, k=6)
 
         context = [h["content"] for h in hits]
-        sources = [h["metadata"] for h in hits]
+        # sources = [h["metadata"] for h in hits]
         system = "You are a medical knowledge assistant. Use ONLY the retrieved document context."
 
     ctx_block = "\n---\n".join(context[:8]) if context else "(no context)"
@@ -234,6 +233,6 @@ if prompt:
     st.session_state.messages.append({
         "role": "assistant",
         "content": streamed,
-        "sources": sources
+        # "sources": sources
     })
     st.rerun()
