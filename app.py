@@ -39,10 +39,28 @@ if "candidates" not in st.session_state:
 if "resolve_message" not in st.session_state:
     st.session_state.resolve_message = None
 if "query_mode" not in st.session_state:
-    st.session_state.query_mode = "Patient-Specific"
+    st.session_state.query_mode = "General"
 
-# ───────────────── Patient selection UI ─────────────────
-st.markdown("### Select & Lock Patient")
+# ───────────────── Mode Selection (Always visible) ─────────────────
+st.markdown("### Query Mode")
+col1, col2 = st.columns([3, 1])
+with col1:
+    query_mode = st.radio("Select what to query:",
+                          ["Patient-Specific", "General"],
+                          horizontal=True,
+                          key="query_mode")
+with col2:
+    if st.session_state.locked:
+        if st.button("🔄 Change Patient"):
+            st.session_state.locked = None
+            st.session_state.pending = None
+            st.session_state.messages.clear()
+            st.session_state.resolve_message = None
+            st.session_state.candidates = []
+            st.rerun()
+
+# ───────────────── Patient selection UI (Always visible) ─────────────────
+st.markdown("### Patient Selection")
 
 
 def resolve_patient():
@@ -71,63 +89,67 @@ def resolve_patient():
         st.session_state.candidates = []
 
 
-q = st.text_input("Patient ID or Name",
-                  key="patient_query",
-                  on_change=resolve_patient)
+# Show patient search only if no patient is locked
+if not st.session_state.locked:
+    q = st.text_input("Patient ID or Name",
+                      key="patient_query",
+                      on_change=resolve_patient)
 
-# Display resolve message if exists
-if st.session_state.resolve_message:
-    msg_type, msg_text = st.session_state.resolve_message
-    if msg_type == "info":
-        st.info(msg_text)
-    elif msg_type == "warning":
-        st.warning(msg_text)
-        for c in st.session_state.candidates:
-            st.write(
-                f"- `{c['patient_id']}` — {c['first_name']} {c['last_name']} (DOB {c['dob']})"
-            )
-    elif msg_type == "error":
-        st.error(msg_text)
-
-if st.session_state.pending:
-    p = st.session_state.pending
-    with st.form(key="dob_form"):
-        dob_in = st.text_input("Confirm DOB (YYYY-MM-DD)", key="dob_confirm")
-        submit_button = st.form_submit_button("Confirm patient")
-        if submit_button:
-            if dob_in.strip() == (p["dob"] or "").strip():
-                st.session_state.locked = p
-                st.session_state.pending = None
-                st.session_state.messages.clear()
-                st.session_state.resolve_message = None
-                st.success(
-                    f"Locked to patient: **{p['first_name']} {p['last_name']}** (`{p['patient_id']}`)"
+    # Display resolve message if exists
+    if st.session_state.resolve_message:
+        msg_type, msg_text = st.session_state.resolve_message
+        if msg_type == "info":
+            st.info(msg_text)
+        elif msg_type == "warning":
+            st.warning(msg_text)
+            for c in st.session_state.candidates:
+                st.write(
+                    f"- `{c['patient_id']}` — {c['first_name']} {c['last_name']} (DOB {c['dob']})"
                 )
-                st.rerun()
-            else:
-                st.error("DOB does not match.")
+        elif msg_type == "error":
+            st.error(msg_text)
 
-if st.session_state.locked:
+    if st.session_state.pending:
+        p = st.session_state.pending
+        with st.form(key="dob_form"):
+            dob_in = st.text_input("Confirm DOB (YYYY-MM-DD)",
+                                   key="dob_confirm")
+            submit_button = st.form_submit_button("Confirm patient")
+            if submit_button:
+                if dob_in.strip() == (p["dob"] or "").strip():
+                    st.session_state.locked = p
+                    st.session_state.pending = None
+                    st.session_state.messages.clear()
+                    st.session_state.resolve_message = None
+                    st.success(
+                        f"Locked to patient: **{p['first_name']} {p['last_name']}** (`{p['patient_id']}`)"
+                    )
+                    st.rerun()
+                else:
+                    st.error("DOB does not match.")
+    else:
+        st.info(
+            "No patient locked. You can use General mode or search for a patient above."
+        )
+else:
+    # Patient is locked
     lp = st.session_state.locked
     st.success(
-        f"**Locked:** {lp['first_name']} {lp['last_name']} (`{lp['patient_id']}`) — DOB: {lp['dob']}"
+        f"**Locked Patient:** {lp['first_name']} {lp['last_name']} (`{lp['patient_id']}`) — DOB: {lp['dob']}"
     )
 
-    # Show mode toggle when patient is locked
-    st.markdown("### Query Mode")
-    query_mode = st.radio("Select what to query:",
-                          ["Patient-Specific", "General"],
-                          horizontal=True,
-                          key="query_mode")
-
-    if query_mode == "Patient-Specific":
+# Show current mode status
+if st.session_state.query_mode == "Patient-Specific":
+    if st.session_state.locked:
         st.info(
-            f"💬 Asking about patient: **{lp['first_name']} {lp['last_name']}**"
+            f"💬 Currently querying patient: **{st.session_state.locked['first_name']} {st.session_state.locked['last_name']}**"
         )
     else:
-        st.info("💬 Asking about general medical documents")
+        st.warning(
+            "⚠️ Patient-Specific mode requires a locked patient. Please lock a patient or switch to General mode."
+        )
 else:
-    st.info("No patient locked yet.")
+    st.info("💬 Currently querying general medical documents")
 
 # ───────────────── Chat UI ─────────────────
 st.markdown("### Chat")
@@ -141,34 +163,34 @@ for msg in st.session_state.messages:
                 st.json(msg["sources"])
 
 # 2) Collect new input
-if st.session_state.locked:
-    if st.session_state.query_mode == "Patient-Specific":
+if st.session_state.query_mode == "Patient-Specific":
+    if st.session_state.locked:
         prompt = st.chat_input(
             "Ask about this patient (e.g., 'What medications is this patient on?')"
         )
     else:
         prompt = st.chat_input(
-            "Ask about general medical topics (e.g., 'What are common treatments for hypertension?')"
-        )
+            "Please lock a patient first or switch to General mode")
 else:
-    prompt = st.chat_input("Please lock a patient first to start chatting")
+    prompt = st.chat_input(
+        "Ask about general medical topics (e.g., 'What are common treatments for hypertension?')"
+    )
 
 # 3) Handle the prompt
 if prompt:
-    if not st.session_state.locked:
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        st.session_state.messages.append({
-            "role":
-            "assistant",
-            "content":
-            "Please lock a patient first."
-        })
-        st.rerun()
-
     # append user msg
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     if st.session_state.query_mode == "Patient-Specific":
+        if not st.session_state.locked:
+            st.session_state.messages.append({
+                "role":
+                "assistant",
+                "content":
+                "Please lock a patient first or switch to General mode."
+            })
+            st.rerun()
+
         # RAG for locked patient
         pid = st.session_state.locked["patient_id"]
         with st.spinner("Retrieving patient context..."):
