@@ -1,102 +1,95 @@
-from typing import Optional, Tuple, List, Dict, Any
-import re
+from typing import Optional, List, Dict, Any
+from langchain_openai import ChatOpenAI
+from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 from patients import fuzzy_resolve
+import os
 
-def extract_patient_references(query: str, roster: List[Dict[str, str]]) -> Tuple[Optional[str], List[str]]:
+# Use a smaller, faster model for routing
+ROUTER_MODEL = os.getenv("ROUTER_MODEL", "gpt-4o-mini")
+router_llm = ChatOpenAI(model=ROUTER_MODEL, temperature=0)
+
+# Define the routing prompt
+ROUTING_PROMPT = ChatPromptTemplate.from_messages([(
+    "system",
+    """You are a query routing assistant for a medical EHR system. Analyze the user's query and determine:
+
+1. **intent**: Is this a "patient_specific" query (asking about a specific patient's records) or a "general" query (asking about general medical knowledge)?
+
+2. **patient_reference**: If patient-specific, extract any patient name or ID mentioned. Return null if none found.
+
+3. **confidence**: Your confidence level (0.0 to 1.0) in the intent classification.
+
+Examples:
+- "What's the protocol for postoperative fever?" → intent: "general", patient_reference: null
+- "Show me Alex's latest MRI results" → intent: "patient_specific", patient_reference: "Alex"
+- "What medications is Sarah Johnson on?" → intent: "patient_specific", patient_reference: "Sarah Johnson"
+- "Patient IVF001's lab results" → intent: "patient_specific", patient_reference: "IVF001"
+- "What are his current vitals?" → intent: "patient_specific", patient_reference: null (context needed)
+- "Explain hypertension treatment guidelines" → intent: "general", patient_reference: null
+
+Return a JSON object with these fields: intent, patient_reference, confidence"""
+), ("user", "{query}")])
+
+
+def analyze_query_with_llm(
+        query: str,
+        roster: List[Dict[str, str]],
+        locked_patient: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """
-    Extract potential patient names or IDs from a natural language query.
-    Returns: (detected_name_or_id, potential_name_parts)
+    Use an LLM to analyze the query and route it appropriately.
+
+    Args:
+        query: The user's natural language query
+        roster: List of all patients in the system
+        locked_patient: Currently locked patient (if any)
+
+    Returns:
+        Dict with: intent, patient_reference, resolved_patient, candidates, confidence
     """
-    query_lower = query.lower()
+    # Get LLM routing decision
+    chain = ROUTING_PROMPT | router_llm | JsonOutputParser()
 
-    # Check for explicit patient ID patterns (e.g., "patient IVF001", "ID: IVF001")
-    id_patterns = [
-        r"patient\s+([A-Z0-9]+)",
-        r"patient\s+id\s+([A-Z0-9]+)",
-        r"id:?\s*([A-Z0-9]+)",
-    ]
-    for pattern in id_patterns:
-        match = re.search(pattern, query, re.IGNORECASE)
-        if match:
-            return match.group(1), []
+    try:
+        routing_decision = chain.invoke({"query": query})
+    except Exception as e:
+        # Fallback to general if LLM fails
+        routing_decision = {
+            "intent": "general",
+            "patient_reference": None,
+            "confidence": 0.5
+        }
 
-    # Look for possessive patterns that might indicate a patient name
-    # e.g., "Alex's", "show me Sarah's", "what are John's"
-    possessive_pattern = r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)'s\b"
-    possessive_matches = re.findall(possessive_pattern, query)
-    if possessive_matches:
-        return possessive_matches[0], possessive_matches
-
-    # Look for "patient NAME" or "for NAME" patterns
-    name_patterns = [
-        r"patient\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
-        r"for\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
-        r"about\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
-    ]
-    for pattern in name_patterns:
-        match = re.search(pattern, query)
-        if match:
-            return match.group(1), [match.group(1)]
-
-    # Extract all capitalized words (potential names) but only if query suggests patient context
-    patient_indicators = ["show me", "patient", "his", "her", "their"]
-    has_patient_context = any(indicator in query_lower for indicator in patient_indicators)
-
-    if has_patient_context:
-        # Find capitalized words that might be names
-        capitalized_words = re.findall(r'\b[A-Z][a-z]+\b', query)
-        # Filter out common medical terms
-        common_terms = {"MRI", "CT", "Labs", "Results", "Report", "Dr", "Doctor"}
-        potential_names = [w for w in capitalized_words if w not in common_terms]
-        if potential_names:
-            return " ".join(potential_names[:2]), potential_names  # Take up to 2 words as potential full name
-
-    return None, []
-
-def is_patient_specific_query(query: str) -> bool:
-    """
-    Determine if a query is likely asking about a specific patient.
-    """
-    patient_indicators = [
-        "his", "her", "their", "this patient", "the patient",
-        "show me", "what are", "patient's", "patient",
-        "latest", "recent", "current", "last"
-    ]
-
-    query_lower = query.lower()
-    return any(indicator in query_lower for indicator in patient_indicators)
-
-def analyze_query(query: str, roster: List[Dict[str, str]]) -> Dict[str, Any]:
-    """
-    Analyze a query to determine intent and extract patient information.
-    Returns a dict with:
-        - intent: "patient_specific" or "general"
-        - patient_reference: extracted name/ID if found
-        - resolved_patient: patient dict if uniquely resolved
-        - candidates: list of candidate patients if ambiguous
-    """
     result = {
-        "intent": "general",
-        "patient_reference": None,
+        "intent": routing_decision.get("intent", "general"),
+        "patient_reference": routing_decision.get("patient_reference"),
+        "confidence": routing_decision.get("confidence", 0.5),
         "resolved_patient": None,
         "candidates": []
     }
 
-    # Extract potential patient references
-    patient_ref, _ = extract_patient_references(query, roster)
+    # If patient-specific intent
+    if result["intent"] == "patient_specific":
+        patient_ref = result["patient_reference"]
 
-    if patient_ref:
-        result["patient_reference"] = patient_ref
-        # Try to resolve the patient
-        resolved, candidates, reason = fuzzy_resolve(roster, patient_ref)
-        if resolved:
-            result["intent"] = "patient_specific"
-            result["resolved_patient"] = resolved
-        elif candidates:
-            result["intent"] = "patient_specific"
-            result["candidates"] = candidates
-    elif is_patient_specific_query(query):
-        # Query seems patient-specific but no name found
-        result["intent"] = "patient_specific_no_context"
+        if patient_ref:
+            # Try to resolve the patient using fuzzy matching
+            resolved, candidates, reason = fuzzy_resolve(roster, patient_ref)
+
+            if resolved:
+                result["resolved_patient"] = resolved
+            elif candidates:
+                result["candidates"] = candidates
+            else:
+                # LLM detected patient intent but we can't find the patient
+                result["intent"] = "patient_specific_not_found"
+        else:
+            # LLM says patient-specific but no name extracted
+            # Check if we have a locked patient to use
+            if locked_patient:
+                result["resolved_patient"] = locked_patient
+                result["intent"] = "patient_specific_use_locked"
+            else:
+                result["intent"] = "patient_specific_no_context"
 
     return result

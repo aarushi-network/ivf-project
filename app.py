@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from patients import build_roster_from_supabase, fuzzy_resolve
 from retrieve_supabase import match_patient_chunks, match_general_documents
-from query_analyzer import analyze_query
+from query_analyzer import analyze_query_with_llm
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -117,17 +117,26 @@ if prompt:
             })
             st.rerun()
 
-    # Normal query processing
-    analysis = analyze_query(prompt, ROSTER)
+    # Use LLM-based routing
+    with st.spinner("Analyzing query..."):
+        from query_analyzer import analyze_query_with_llm
+        analysis = analyze_query_with_llm(prompt, ROSTER,
+                                          st.session_state.locked_patient)
 
-    # Handle different scenarios
+    # Handle different routing scenarios
     if analysis["resolved_patient"]:
         # Unique patient found - lock to it
         patient = analysis["resolved_patient"]
-        st.session_state.locked_patient = patient
+
+        # Only update lock if it's a different patient
+        if not st.session_state.locked_patient or st.session_state.locked_patient[
+                'patient_id'] != patient['patient_id']:
+            st.session_state.locked_patient = patient
 
         # Get patient context
-        with st.spinner("Retrieving patient records..."):
+        with st.spinner(
+                f"Retrieving records for {patient['first_name']} {patient['last_name']}..."
+        ):
             hits = match_patient_chunks(prompt, patient["patient_id"], k=6)
 
         context = [h["content"] for h in hits]
@@ -137,7 +146,7 @@ if prompt:
     elif analysis["candidates"]:
         # Multiple patients found - ask for clarification
         st.session_state.awaiting_disambiguation = analysis["candidates"]
-        response = f"I found multiple patients named '{analysis['patient_reference']}'. Did you mean:\n\n"
+        response = f"I found multiple patients matching '{analysis['patient_reference']}'. Did you mean:\n\n"
         for idx, candidate in enumerate(analysis["candidates"]):
             response += f"{idx + 1}. **{candidate['first_name']} {candidate['last_name']}** (DOB: {candidate['dob']}, ID: `{candidate['patient_id']}`)\n"
         response += "\nPlease type the number, patient ID, or full name to select."
@@ -147,9 +156,8 @@ if prompt:
         })
         st.rerun()
 
-    elif analysis[
-            "intent"] == "patient_specific_no_context" and st.session_state.locked_patient:
-        # Query is patient-specific but no name mentioned, use locked patient
+    elif analysis["intent"] == "patient_specific_use_locked":
+        # Using locked patient context
         patient = st.session_state.locked_patient
         with st.spinner(
                 f"Retrieving records for {patient['first_name']} {patient['last_name']}..."
@@ -160,10 +168,18 @@ if prompt:
         sources = [h["metadata"] for h in hits]
         system = f"You are a clinical assistant. Use ONLY the retrieved patient context for {patient['first_name']} {patient['last_name']}."
 
-    elif analysis[
-            "intent"] == "patient_specific_no_context" and not st.session_state.locked_patient:
-        # Patient-specific query but no patient locked
+    elif analysis["intent"] == "patient_specific_no_context":
+        # Patient-specific query but no patient locked or found
         response = "It seems you're asking about a specific patient, but I need to know which patient. Could you please mention the patient's name or ID?"
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": response
+        })
+        st.rerun()
+
+    elif analysis["intent"] == "patient_specific_not_found":
+        # Patient name detected but not in roster
+        response = f"I couldn't find a patient matching '{analysis['patient_reference']}' in the system. Please check the name or ID and try again."
         st.session_state.messages.append({
             "role": "assistant",
             "content": response
