@@ -1,10 +1,10 @@
-# app.py (streaming chat + Supabase RAG) — no duplicate assistant message
 import os
 import streamlit as st
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from patients import build_roster_from_supabase, fuzzy_resolve
-from retrieve_supabase import match_patient_chunks
+from retrieve_supabase import match_patient_chunks, match_general_documents
+from query_analyzer import analyze_query
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -15,212 +15,189 @@ if not OPENAI_API_KEY:
     st.stop()
 
 st.set_page_config(page_title="EHR Query Agent", layout="centered")
-st.markdown("## EHR Query Agent")
+st.markdown("## 🏥 EHR Query Agent")
+st.markdown(
+    "*Ask me anything - I'll automatically detect if it's about a patient or general medical knowledge.*"
+)
 
 chat = ChatOpenAI(model=LLM_MODEL, temperature=0)
 
 # Load roster
-with st.status("Loading patient roster"):
+with st.status("Loading patient roster...", expanded=False):
     ROSTER = build_roster_from_supabase()
 
 if not ROSTER:
-    st.error("No patients found in roster.")
+    st.error("No patients found in Supabase rag_chunks.metadata.")
     st.stop()
 
 # Session state
-if "locked" not in st.session_state:
-    st.session_state.locked = None
-if "pending" not in st.session_state:
-    st.session_state.pending = None
+if "locked_patient" not in st.session_state:
+    st.session_state.locked_patient = None
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "candidates" not in st.session_state:
-    st.session_state.candidates = []
-if "resolve_message" not in st.session_state:
-    st.session_state.resolve_message = None
-if "query_mode" not in st.session_state:
-    st.session_state.query_mode = "General"
+if "awaiting_disambiguation" not in st.session_state:
+    st.session_state.awaiting_disambiguation = None
 
-# ───────────────── Mode Selection (Always visible) ─────────────────
-st.markdown("### Query Mode")
-col1, col2 = st.columns([3, 1])
-with col1:
-    query_mode = st.radio("Select what to query:",
-                          ["Patient-Specific", "General"],
-                          horizontal=True,
-                          key="query_mode")
-with col2:
-    if st.session_state.locked:
-        if st.button("🔄 Change Patient"):
-            st.session_state.locked = None
-            st.session_state.pending = None
-            st.session_state.messages.clear()
-            st.session_state.resolve_message = None
-            st.session_state.candidates = []
-            st.rerun()
-
-# ───────────────── Patient selection UI (Always visible) ─────────────────
-st.markdown("### Patient Selection")
-
-
-def resolve_patient():
-    q = st.session_state.patient_query
-    if q:
-        resolved, candidates, reason = fuzzy_resolve(ROSTER, q)
-        if resolved:
-            st.session_state.pending = resolved
-            st.session_state.resolve_message = (
-                "info",
-                f"Detected: **{resolved['first_name']} {resolved['last_name']}** (`{resolved['patient_id']}`)"
-            )
-        elif candidates:
-            st.session_state.pending = None
-            st.session_state.resolve_message = ("warning",
-                                                "Multiple matches found")
-            st.session_state.candidates = candidates
-        else:
-            st.session_state.pending = None
-            st.session_state.resolve_message = ("error",
-                                                "No match found. Try again.")
-            st.session_state.candidates = []
-    else:
-        st.session_state.pending = None
-        st.session_state.resolve_message = None
-        st.session_state.candidates = []
-
-
-# Show patient search only if no patient is locked
-if not st.session_state.locked:
-    q = st.text_input("Patient ID or Name",
-                      key="patient_query",
-                      on_change=resolve_patient)
-
-    # Display resolve message if exists
-    if st.session_state.resolve_message:
-        msg_type, msg_text = st.session_state.resolve_message
-        if msg_type == "info":
-            st.info(msg_text)
-        elif msg_type == "warning":
-            st.warning(msg_text)
-            for c in st.session_state.candidates:
-                st.write(
-                    f"- `{c['patient_id']}` — {c['first_name']} {c['last_name']} (DOB {c['dob']})"
-                )
-        elif msg_type == "error":
-            st.error(msg_text)
-
-    if st.session_state.pending:
-        p = st.session_state.pending
-        with st.form(key="dob_form"):
-            dob_in = st.text_input("Confirm DOB (YYYY-MM-DD)",
-                                   key="dob_confirm")
-            submit_button = st.form_submit_button("Confirm patient")
-            if submit_button:
-                if dob_in.strip() == (p["dob"] or "").strip():
-                    st.session_state.locked = p
-                    st.session_state.pending = None
-                    st.session_state.messages.clear()
-                    st.session_state.resolve_message = None
-                    st.success(
-                        f"Locked to patient: **{p['first_name']} {p['last_name']}** (`{p['patient_id']}`)"
-                    )
-                    st.rerun()
-                else:
-                    st.error("DOB does not match.")
-    else:
-        st.info(
-            "No patient locked. You can use General mode or search for a patient above."
+# Show locked patient status
+if st.session_state.locked_patient:
+    p = st.session_state.locked_patient
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.success(
+            f"🔒 **Active Patient:** {p['first_name']} {p['last_name']} (ID: `{p['patient_id']}`, DOB: {p['dob']})"
         )
-else:
-    # Patient is locked
-    lp = st.session_state.locked
-    st.success(
-        f"**Locked Patient:** {lp['first_name']} {lp['last_name']} (`{lp['patient_id']}`) — DOB: {lp['dob']}"
-    )
-
-# Show current mode status
-if st.session_state.query_mode == "Patient-Specific":
-    if st.session_state.locked:
-        st.info(
-            f"💬 Currently querying patient: **{st.session_state.locked['first_name']} {st.session_state.locked['last_name']}**"
-        )
-    else:
-        st.warning(
-            "⚠️ Patient-Specific mode requires a locked patient. Please lock a patient or switch to General mode."
-        )
-else:
-    st.info("💬 Currently querying general medical documents")
-
-# ───────────────── Chat UI ─────────────────
-st.markdown("### Chat")
-
-# 1) Render existing history
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.write(msg["content"])
-        # if msg.get("sources") and msg["role"] == "assistant":
-        #     with st.expander("Sources"):
-        #         st.json(msg["sources"])
-
-# 2) Collect new input
-if st.session_state.query_mode == "Patient-Specific":
-    if st.session_state.locked:
-        prompt = st.chat_input(
-            "Ask about this patient (e.g., 'What medications is this patient on?')"
-        )
-    else:
-        prompt = st.chat_input(
-            "Please lock a patient first or switch to General mode")
-else:
-    prompt = st.chat_input(
-        "Ask about general medical topics (e.g., 'What is PCOD?')")
-
-# 3) Handle the prompt
-if prompt:
-    # append user msg
-    st.session_state.messages.append({"role": "user", "content": prompt})
-
-    if st.session_state.query_mode == "Patient-Specific":
-        if not st.session_state.locked:
+    with col2:
+        if st.button("Clear"):
+            st.session_state.locked_patient = None
             st.session_state.messages.append({
                 "role":
                 "assistant",
                 "content":
-                "Please lock a patient first or switch to General mode."
+                "Patient context cleared. You can now ask general questions or mention a different patient."
             })
             st.rerun()
 
-        # RAG for locked patient
-        pid = st.session_state.locked["patient_id"]
-        with st.spinner("Retrieving patient context..."):
-            hits = match_patient_chunks(prompt, pid, k=6)
+st.markdown("---")
+
+# Render chat history
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.write(msg["content"])
+        if msg.get("sources") and msg["role"] == "assistant":
+            with st.expander("📚 Sources"):
+                st.json(msg["sources"])
+
+# Chat input
+prompt = st.chat_input(
+    "Ask anything... (e.g., 'What's the protocol for fever?' or 'Show me Alex's latest MRI')"
+)
+
+if prompt:
+    # Add user message
+    st.session_state.messages.append({"role": "user", "content": prompt})
+
+    # Check if awaiting disambiguation response
+    if st.session_state.awaiting_disambiguation:
+        # User is responding to disambiguation
+        user_choice = prompt.strip().lower()
+        candidates = st.session_state.awaiting_disambiguation
+
+        # Try to match user's choice
+        selected = None
+        for idx, candidate in enumerate(candidates):
+            # Check if user typed a number (1, 2, etc.)
+            if user_choice == str(idx + 1):
+                selected = candidate
+                break
+            # Check if user typed the patient ID
+            if user_choice == candidate['patient_id'].lower():
+                selected = candidate
+                break
+            # Check if user typed part of the name
+            full_name = f"{candidate['first_name']} {candidate['last_name']}".lower(
+            )
+            if user_choice in full_name or full_name in user_choice:
+                selected = candidate
+                break
+
+        if selected:
+            st.session_state.locked_patient = selected
+            st.session_state.awaiting_disambiguation = None
+            response = f"✅ Locked to patient **{selected['first_name']} {selected['last_name']}** (DOB: {selected['dob']}). What would you like to know?"
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": response
+            })
+            st.rerun()
+        else:
+            response = "I couldn't match your selection. Please try again by typing the number, patient ID, or name."
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": response
+            })
+            st.rerun()
+
+    # Normal query processing
+    analysis = analyze_query(prompt, ROSTER)
+
+    # Handle different scenarios
+    if analysis["resolved_patient"]:
+        # Unique patient found - lock to it
+        patient = analysis["resolved_patient"]
+        st.session_state.locked_patient = patient
+
+        # Get patient context
+        with st.spinner("Retrieving patient records..."):
+            hits = match_patient_chunks(prompt, patient["patient_id"], k=6)
 
         context = [h["content"] for h in hits]
-        # sources = [h["metadata"] for h in hits]
-        system = "You are a clinical assistant. Use ONLY the retrieved patient context."
+        sources = [h["metadata"] for h in hits]
+        system = f"You are a clinical assistant. Use ONLY the retrieved patient context for {patient['first_name']} {patient['last_name']}."
+
+    elif analysis["candidates"]:
+        # Multiple patients found - ask for clarification
+        st.session_state.awaiting_disambiguation = analysis["candidates"]
+        response = f"I found multiple patients named '{analysis['patient_reference']}'. Did you mean:\n\n"
+        for idx, candidate in enumerate(analysis["candidates"]):
+            response += f"{idx + 1}. **{candidate['first_name']} {candidate['last_name']}** (DOB: {candidate['dob']}, ID: `{candidate['patient_id']}`)\n"
+        response += "\nPlease type the number, patient ID, or full name to select."
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": response
+        })
+        st.rerun()
+
+    elif analysis[
+            "intent"] == "patient_specific_no_context" and st.session_state.locked_patient:
+        # Query is patient-specific but no name mentioned, use locked patient
+        patient = st.session_state.locked_patient
+        with st.spinner(
+                f"Retrieving records for {patient['first_name']} {patient['last_name']}..."
+        ):
+            hits = match_patient_chunks(prompt, patient["patient_id"], k=6)
+
+        context = [h["content"] for h in hits]
+        sources = [h["metadata"] for h in hits]
+        system = f"You are a clinical assistant. Use ONLY the retrieved patient context for {patient['first_name']} {patient['last_name']}."
+
+    elif analysis[
+            "intent"] == "patient_specific_no_context" and not st.session_state.locked_patient:
+        # Patient-specific query but no patient locked
+        response = "It seems you're asking about a specific patient, but I need to know which patient. Could you please mention the patient's name or ID?"
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": response
+        })
+        st.rerun()
+
     else:
-        # RAG for general documents
-        with st.spinner("Retrieving general documents..."):
-            from retrieve_supabase import match_general_documents
+        # General medical query
+        with st.spinner("Searching medical knowledge base..."):
             hits = match_general_documents(prompt, k=6)
 
         context = [h["content"] for h in hits]
-        # sources = [h["metadata"] for h in hits]
-        system = "You are a medical knowledge assistant. Use ONLY the retrieved document context."
+        sources = [h["metadata"] for h in hits]
+        system = "You are a medical knowledge assistant. Use ONLY the retrieved document context to answer questions."
 
+    # Build conversation with memory (last 7 messages)
     ctx_block = "\n---\n".join(context[:8]) if context else "(no context)"
-    messages = [
-        {
-            "role": "system",
-            "content": system
-        },
-        {
-            "role": "user",
-            "content": f"CONTEXT:\n{ctx_block}\n\nQUESTION: {prompt}\nAnswer:"
-        },
-    ]
+    messages = [{"role": "system", "content": system}]
 
-    # 4) Stream the assistant reply
+    # Add last 7 messages from history
+    recent_history = st.session_state.messages[-8:-1] if len(
+        st.session_state.messages) > 1 else []
+    for msg in recent_history[-7:]:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+
+    # Add current query with context
+    messages.append({
+        "role":
+        "user",
+        "content":
+        f"CONTEXT:\n{ctx_block}\n\nQUESTION: {prompt}\nAnswer:"
+    })
+
+    # Stream response
     with st.chat_message("assistant"):
         placeholder = st.empty()
         streamed = ""
@@ -229,10 +206,10 @@ if prompt:
                 streamed += chunk.content or ""
                 placeholder.markdown(streamed)
 
-    # 5) Persist the assistant message
+    # Save response
     st.session_state.messages.append({
         "role": "assistant",
         "content": streamed,
-        # "sources": sources
+        "sources": sources
     })
     st.rerun()
