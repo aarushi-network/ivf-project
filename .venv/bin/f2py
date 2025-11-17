@@ -1,6 +1,4 @@
-#!/bin/sh
-'''exec' "/Users/aarushisharma/Documents/AI Project/IVF Project/code/.venv/bin/python" "$0" "$@"
-' '''
+#!/Users/aarushisharma/Downloads/ivf-project/.venv/bin/python
 import sys
 from numpy.f2py.f2py2e import main
 if __name__ == '__main__':
