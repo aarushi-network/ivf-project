@@ -3,7 +3,7 @@ import streamlit as st
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from patients import build_roster_from_supabase, fuzzy_resolve
-from retrieve_supabase import match_patient_chunks, match_general_documents
+from retrieve_supabase import match_patient_chunks
 from query_analyzer import analyze_query_with_slm
 
 load_dotenv()
@@ -16,9 +16,6 @@ if not OPENAI_API_KEY:
 
 st.set_page_config(page_title="EHR Query Agent", layout="centered")
 st.markdown("## 🏥 EHR Query Agent")
-st.markdown(
-    "*Ask me anything - I'll automatically detect if it's about a patient or general medical knowledge.*"
-)
 
 chat = ChatOpenAI(model=LLM_MODEL, temperature=0)
 
@@ -404,25 +401,12 @@ Remember: The context summary at the top shows how many chunks you have for each
         st.rerun()
 
     else:
-        # General medical query
-        with st.spinner("Searching medical knowledge base..."):
-            hits = match_general_documents(prompt, k=6)
-
-        context = [h["content"] for h in hits]
-        sources = [h["metadata"] for h in hits]
-        system = "You are a medical knowledge assistant. Use ONLY the retrieved document context to answer questions."
+        # General medical query - use ChatGPT's knowledge directly (no Supabase retrieval)
+        context = []  # No context from Supabase for general queries
+        sources = []  # No sources for general queries
+        system = "You are a medical knowledge assistant. Use your training knowledge to answer general medical questions. Provide accurate, evidence-based information."
 
     # Build conversation with memory (last 7 messages)
-    # For multi-patient queries, allow more context chunks (at least 15 per patient)
-    # For single patient, use reasonable limit
-    if analysis.get("resolved_patients") and len(analysis.get("resolved_patients", [])) >= 2:
-        num_patients = len(analysis["resolved_patients"])
-        # Allow at least 15 chunks per patient to ensure all data is included
-        max_context_chunks = max(50, num_patients * 15)
-        ctx_block = "\n---\n".join(context[:max_context_chunks]) if context else "(no context)"
-    else:
-        # Single patient or general query - use reasonable limit
-        ctx_block = "\n---\n".join(context[:20]) if context else "(no context)"
     messages = [{"role": "system", "content": system}]
 
     # Add last 7 messages from history
@@ -431,13 +415,28 @@ Remember: The context summary at the top shows how many chunks you have for each
     for msg in recent_history[-7:]:
         messages.append({"role": msg["role"], "content": msg["content"]})
 
-    # Add current query with context
-    messages.append({
-        "role":
-        "user",
-        "content":
-        f"CONTEXT:\n{ctx_block}\n\nQUESTION: {prompt}\nAnswer:"
-    })
+    # Add current query with context (only for patient-specific queries)
+    if context and len(context) > 0:
+        # Patient-specific query - include context from Supabase
+        # For multi-patient queries, allow more context chunks (at least 15 per patient)
+        if analysis.get("resolved_patients") and len(analysis.get("resolved_patients", [])) >= 2:
+            num_patients = len(analysis["resolved_patients"])
+            # Allow at least 15 chunks per patient to ensure all data is included
+            max_context_chunks = max(50, num_patients * 15)
+            ctx_block = "\n---\n".join(context[:max_context_chunks])
+        else:
+            # Single patient query - use reasonable limit
+            ctx_block = "\n---\n".join(context[:20])
+        messages.append({
+            "role": "user",
+            "content": f"CONTEXT:\n{ctx_block}\n\nQUESTION: {prompt}\nAnswer:"
+        })
+    else:
+        # General query - no context, use ChatGPT's knowledge directly
+        messages.append({
+            "role": "user",
+            "content": prompt
+        })
 
     # Stream response
     with st.chat_message("assistant"):
