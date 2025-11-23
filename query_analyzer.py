@@ -11,9 +11,8 @@ ROUTER_MODEL = os.getenv("ROUTER_MODEL", "gpt-3.5-turbo")
 router_llm = ChatOpenAI(model=ROUTER_MODEL, temperature=0)
 
 # Define the routing prompt
-ROUTING_PROMPT = ChatPromptTemplate.from_messages([(
-    "system",
-    """You are a query routing assistant for a medical EHR system. Analyze the user's query and determine:
+ROUTING_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """You are a query routing assistant for a medical EHR system. Analyze the user's query and determine:
 
 1. **intent**: Is this a "patient_specific" query (asking about a specific patient's records), "multi_patient" query (comparing or asking about multiple patients), or a "general" query (asking about general medical knowledge)?
 
@@ -28,6 +27,8 @@ ROUTING_PROMPT = ChatPromptTemplate.from_messages([(
 
 4. **confidence**: Your confidence level (0.0 to 1.0) in the intent classification.
 
+CRITICAL: If there is a currently active/locked patient and the query uses pronouns (her, his, their, she, he, they) or refers to "the patient" or "this patient", treat it as a "patient_specific" query even if no explicit name is mentioned.
+
 Examples:
 - "What's the protocol for postoperative fever?" → intent: "general", patient_reference: null, patient_references: []
 - "Show me Alex's latest MRI results" → intent: "patient_specific", patient_reference: "Alex", patient_references: []
@@ -37,10 +38,12 @@ Examples:
 - "What medications is Sarah Johnson on?" → intent: "patient_specific", patient_reference: "Sarah Johnson", patient_references: []
 - "Patient IVF001's lab results" → intent: "patient_specific", patient_reference: "IVF001", patient_references: []
 - "What are his current vitals?" → intent: "patient_specific", patient_reference: null, patient_references: []
+- "What is her height?" (when there's an active patient) → intent: "patient_specific", patient_reference: null, patient_references: []
 - "Explain hypertension treatment guidelines" → intent: "general", patient_reference: null, patient_references: []
 
-IMPORTANT: When extracting patient_references, make sure to include ALL patients mentioned, especially the last one after "and". Return a JSON object with these fields: intent, patient_reference, patient_references, confidence"""
-), ("user", "{query}")])
+IMPORTANT: When extracting patient_references, make sure to include ALL patients mentioned, especially the last one after "and". Return a JSON object with these fields: intent, patient_reference, patient_references, confidence"""),
+    ("user", "Query: {query}\n\nActive Patient: {locked_patient_info}")
+])
 
 
 def analyze_query_with_slm(
@@ -58,11 +61,20 @@ def analyze_query_with_slm(
     Returns:
         Dict with: intent, patient_reference, resolved_patient, candidates, confidence
     """
+    # Prepare locked patient info for the routing prompt
+    if locked_patient:
+        locked_patient_info = f"{locked_patient.get('first_name', '')} {locked_patient.get('last_name', '')} (ID: {locked_patient.get('patient_id', '')})"
+    else:
+        locked_patient_info = "None"
+    
     # Get SLM routing decision
     chain = ROUTING_PROMPT | router_llm | JsonOutputParser()
 
     try:
-        routing_decision = chain.invoke({"query": query})
+        routing_decision = chain.invoke({
+            "query": query,
+            "locked_patient_info": locked_patient_info
+        })
     except Exception as e:
         # Fallback to general if SLM fails
         routing_decision = {
@@ -168,5 +180,22 @@ def analyze_query_with_slm(
                 result["intent"] = "patient_specific_use_locked"
             else:
                 result["intent"] = "patient_specific_no_context"
+    
+    # CRITICAL FIX: If intent is "general" but we have a locked patient and the query seems patient-related
+    # (uses pronouns, asks about patient data), treat it as patient_specific
+    if result["intent"] == "general" and locked_patient:
+        # Check if query contains pronouns or patient-related terms
+        query_lower = query.lower()
+        patient_indicators = [
+            "her", "his", "their", "she", "he", "they",
+            "the patient", "this patient", "current patient",
+            "age", "height", "weight", "vitals", "medications", 
+            "lab results", "test results", "diagnosis", "treatment"
+        ]
+        
+        # If query contains patient indicators, it's likely about the locked patient
+        if any(indicator in query_lower for indicator in patient_indicators):
+            result["resolved_patient"] = locked_patient
+            result["intent"] = "patient_specific_use_locked"
 
     return result
