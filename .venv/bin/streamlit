@@ -1,4 +1,6 @@
-#!/Users/aarushisharma/Downloads/ivf-project/.venv/bin/python
+#!/bin/sh
+'''exec' "/Users/aarushisharma/Documents/AI Project/ivf-project/.venv/bin/python" "$0" "$@"
+' '''
 import sys
 from streamlit.web.cli import main
 if __name__ == '__main__':
