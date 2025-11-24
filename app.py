@@ -15,12 +15,12 @@ if not OPENAI_API_KEY:
     st.stop()
 
 st.set_page_config(page_title="EHR Query Agent", layout="centered")
-st.markdown("## 🏥 EHR Query Agent")
+st.markdown("## EHR Query Agent")
 
 chat = ChatOpenAI(model=LLM_MODEL, temperature=0)
 
 # Load roster
-with st.status("Loading patient roster...", expanded=False):
+with st.status("Patient data loaded", expanded=False):
     ROSTER = build_roster_from_supabase()
 
 if not ROSTER:
@@ -125,14 +125,22 @@ if prompt:
                 selected = candidate
                 break
             # Check if user typed part of the name
-            full_name = f"{candidate['first_name']} {candidate['last_name']}".lower(
-            )
-            if user_choice in full_name or full_name in user_choice:
+            first_name_lower = candidate['first_name'].lower()
+            last_name_lower = candidate['last_name'].lower()
+            full_name = f"{first_name_lower} {last_name_lower}"
+            
+            # Check if first name, last name, or full name appears in user's input
+            # This handles cases like "I meant Ritu" or "Ritu" or "Ritu Agarwal"
+            if (first_name_lower in user_choice or 
+                last_name_lower in user_choice or 
+                full_name in user_choice or
+                user_choice in full_name):
                 selected = candidate
                 break
 
         if selected:
             st.session_state.locked_patient = selected
+            st.session_state.active_patients = [selected]  # Update active_patients for UI display
             st.session_state.awaiting_disambiguation = None
             response = f"✅ Locked to patient **{selected['first_name']} {selected['last_name']}** (DOB: {selected['dob']}). What would you like to know?"
             st.session_state.messages.append({
@@ -141,12 +149,10 @@ if prompt:
             })
             st.rerun()
         else:
-            response = "I couldn't match your selection. Please try again by typing the number, patient ID, or name."
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": response
-            })
-            st.rerun()
+            # If no match found, clear disambiguation and try to process as a new query
+            # This handles cases where user asks a new question instead of selecting
+            st.session_state.awaiting_disambiguation = None
+            # Continue to process the query normally below
 
     # Use LLM-based routing
     with st.spinner("Analyzing query..."):

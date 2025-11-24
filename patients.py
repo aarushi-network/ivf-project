@@ -56,14 +56,29 @@ def fuzzy_resolve(
         q: str) -> Tuple[Optional[Dict[str, str]], List[Dict[str, str]], str]:
     q = (q or "").strip()
     if not q: return None, [], "none"
-    id_hits = [r for r in roster if q.lower() in r["patient_id"].lower()]
+    q_lower = q.lower()
+    
+    # Check patient ID matches first
+    id_hits = [r for r in roster if q_lower in r["patient_id"].lower()]
     if len(id_hits) == 1: return id_hits[0], [], "by_id"
     if len(id_hits) > 1: return None, id_hits, "ambiguous"
+    
+    # Check exact first name match (handles cases like "Ritu" matching "Ritu Agarwal")
+    first_name_matches = [r for r in roster if r['first_name'].lower() == q_lower]
+    if len(first_name_matches) == 1:
+        return first_name_matches[0], [], "by_first_name"
+    if len(first_name_matches) > 1:
+        return None, first_name_matches, "ambiguous"
+    
+    # Check if query is contained in first name (handles partial matches)
+    first_name_contains = [r for r in roster if q_lower in r['first_name'].lower() and len(q_lower) >= 3]
+    if len(first_name_contains) == 1:
+        return first_name_contains[0], [], "by_first_name_partial"
+    
+    # Full name fuzzy matching
     names = [f"{r['first_name']} {r['last_name']}".strip() for r in roster]
     if names:
-        q_lower = q.lower()  # Normalize query to lowercase
-        names_lower = [name.lower()
-                       for name in names]  # Normalize all names to lowercase
+        names_lower = [name.lower() for name in names]
         best = process.extractOne(q_lower, names_lower, scorer=fuzz.WRatio)
         if best and best[1] >= 80: return roster[best[2]], [], "by_name"
         cands = process.extract(q_lower,
